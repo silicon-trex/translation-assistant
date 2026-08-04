@@ -15,6 +15,9 @@ const STYLES = `
   border-radius: 12px;
   min-width: 240px;
   max-width: 380px;
+  max-height: 50vh;
+  display: flex;
+  flex-direction: column;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0, 0, 0, 0.08);
   overflow: hidden;
 }
@@ -70,7 +73,24 @@ const STYLES = `
 
 .popup-header .close-btn:hover { background: #e8e8ee; color: #555; }
 
-.popup-body { padding: 10px 14px 14px; }
+.popup-body {
+  padding: 10px 14px 14px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* 内容区细滚动条 */
+.popup-body::-webkit-scrollbar {
+  width: 6px;
+}
+.popup-body::-webkit-scrollbar-thumb {
+  background: #d0d0d0;
+  border-radius: 3px;
+}
+.popup-body::-webkit-scrollbar-thumb:hover {
+  background: #b5b5b5;
+}
 
 .popup-body .original {
   font-size: 13px;
