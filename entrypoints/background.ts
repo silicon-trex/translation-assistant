@@ -12,9 +12,9 @@ const inflight = new Map<string, Promise<string>>();
 // 防抖保存定时器
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
-// 缓存 key 规范化：去掉首尾空格，合并中间多个空格
+// 缓存 key 规范化：去空格 + 忽略大小写（符号保留，因可能影响意思）
 function normalizeKey(text: string): string {
-  return text.trim().replace(/\s+/g, ' ');
+  return text.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
 function makeKey(text: string, targetLang: string): string {
