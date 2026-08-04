@@ -666,8 +666,13 @@ class TranslationManager {
   }
 
   private detectLanguage(text: string): string {
-    if (/[一-鿿㐀-䶿]/.test(text)) return '中文';
-    if (/[぀-ゟ゠-ヿ]/.test(text)) return '日文';
+    // 按字符数量判断占比，中英混合时取占多数的一方（只服务中英互翻）
+    const chinese = (text.match(/[一-鿿]/g) || []).length;
+    const latin = (text.match(/[a-zA-Z]/g) || []).length;
+
+    // 中文字符多于英文 → 中文
+    if (chinese > latin) return '中文';
+    // 英文占多数或相当 → 英文
     return '英文';
   }
 }
