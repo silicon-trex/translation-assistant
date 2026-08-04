@@ -3,9 +3,13 @@ import { defineUnlistedScript } from 'wxt/sandbox';
 // 这个脚本会被 injectScript 注入到页面主世界运行
 // 职责：检测 Shadow DOM 里的选中文字，通过 postMessage 通知 ISOLATED 脚本
 export default defineUnlistedScript(() => {
-  let lastText = '';
+  let lastSentText = '';
+  let pendingText = '';
+  let pendingRect: { top: number; bottom: number; left: number; right: number } | null = null;
   let mouseX = 0, mouseY = 0;
-  let detectTimer: ReturnType<typeof setTimeout> | null = null;
+  let sendTimer: ReturnType<typeof setTimeout> | null = null;
+  let timerActive = false;
+  let emptyCount = 0;
 
   // 记录鼠标位置，作为坐标失效时的兜底
   document.addEventListener('mousemove', (e) => {
@@ -53,44 +57,77 @@ export default defineUnlistedScript(() => {
     return null;
   }
 
-  function checkAndSend() {
+  // 读取当前选中的文字（带 getRangeAt 兜底）
+  function readText(): string {
     try {
       const sel = window.getSelection();
-      // 全屏/放大模式下 sel.toString() 会返回空，但 getRangeAt(0).toString() 有内容
       let text = sel ? sel.toString().trim() : '';
       if (!text && sel && sel.rangeCount > 0) {
         try {
           text = sel.getRangeAt(0).toString().trim();
         } catch {}
       }
-      if (text && text !== lastText) {
-        lastText = text;
-        const rect = getSelectionRect();
-        window.postMessage({
-          type: 'FYLZ_SELECTION',
-          text,
-          rect,
-          mouseX,
-          mouseY,
-        }, '*');
-      } else if (!text && lastText) {
-        // 选中被清空（比如点击了别处）→ 通知隔离脚本收起按钮
-        lastText = '';
-        window.postMessage({ type: 'FYLZ_CLEAR' }, '*');
-      } else if (!text) {
-        lastText = '';
-      }
+      return text;
     } catch {
-      // 忽略异常
+      return '';
     }
   }
 
-  // 即时检测（防抖 100ms，比轮询快）
+  // 立即发送当前记住的选中
+  function sendNow() {
+    if (pendingText && pendingText !== lastSentText) {
+      lastSentText = pendingText;
+      window.postMessage({
+        type: 'FYLZ_SELECTION',
+        text: pendingText,
+        rect: pendingRect,
+        mouseX,
+        mouseY,
+      }, '*');
+    }
+  }
+
+  // 固定延时发送（不是可重置的防抖）：
+  // 快速拖动时，即使选中很快被清空，我们也已经捕获到了文字
+  function scheduleSend() {
+    if (timerActive) return;
+    timerActive = true;
+    sendTimer = setTimeout(() => {
+      timerActive = false;
+      sendNow();
+    }, 100);
+  }
+
+  // selectionchange：立即捕获选中文字（不等防抖），固定延时发送
   document.addEventListener('selectionchange', () => {
-    if (detectTimer) clearTimeout(detectTimer);
-    detectTimer = setTimeout(checkAndSend, 100);
+    const text = readText();
+    if (text) {
+      pendingText = text;
+      pendingRect = getSelectionRect();
+      emptyCount = 0;
+      scheduleSend();
+    }
   }, { passive: true });
 
-  // 轮询兜底
-  setInterval(checkAndSend, 200);
+  // 轮询兜底：负责显示兜底 + 确认清空后再发 FYLZ_CLEAR
+  setInterval(() => {
+    const text = readText();
+    if (text) {
+      pendingText = text;
+      pendingRect = getSelectionRect();
+      emptyCount = 0;
+      sendNow();
+    } else {
+      // 连续 3 次（约 600ms）都空，才认为是真的清空了
+      emptyCount++;
+      if (emptyCount >= 3) {
+        if (lastSentText) {
+          lastSentText = '';
+          window.postMessage({ type: 'FYLZ_CLEAR' }, '*');
+        }
+        pendingText = '';
+        pendingRect = null;
+      }
+    }
+  }, 200);
 });

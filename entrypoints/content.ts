@@ -288,7 +288,7 @@ class PopupInstance {
   }
 
   // ── 结果 ──
-  showResult(data: string, sourceLang: string, targetLang: string) {
+  showResult(data: string, sourceLang: string, targetLang: string, cached = false) {
     this.targetLang = targetLang;
     this.el.innerHTML = '';
 
@@ -301,7 +301,7 @@ class PopupInstance {
         <span class="result-text">${this.escapeHtml(data)}</span>
         <button class="copy-btn" title="复制翻译结果">📋</button>
       </div>
-      <div class="language-hint">${sourceLang} → ${targetLang}</div>
+      <div class="language-hint">${sourceLang} → ${targetLang}${cached ? '  ·  ⚡ 缓存' : ''}</div>
     `;
 
     this.el.appendChild(header);
@@ -383,6 +383,8 @@ class TranslationManager {
   private instances: PopupInstance[] = [];
   private selectedText = '';
   private triggerCooldown = false;
+  private lastPopupCreatedAt = 0;
+  private isTriggerPressed = false;
 
   init() {
     if (this.host) return;
@@ -403,6 +405,18 @@ class TranslationManager {
 
     document.body.appendChild(this.host);
 
+    // 按下瞬间"抓住"指针：鼠标移动也能正常触发 click
+    this.trigger.addEventListener('pointerdown', (e) => {
+      this.isTriggerPressed = true;
+      try { (e.target as HTMLElement).setPointerCapture(e.pointerId); } catch {}
+    });
+    this.trigger.addEventListener('pointerup', () => {
+      this.isTriggerPressed = false;
+    });
+    // mousedown 兜底：万一 pointerdown 被页面拦截，也能标记"正在按"
+    this.trigger.addEventListener('mousedown', () => {
+      this.isTriggerPressed = true;
+    });
     this.trigger.addEventListener('click', () => {
       this.createPopup();
     });
@@ -414,9 +428,20 @@ class TranslationManager {
 
     // 点击扩展外部 → 关闭未置顶浮窗 + 收起按钮
     document.addEventListener('mousedown', (e) => {
-      if (this.host && this.host.contains(e.target as Node)) return;
+      // 点在我们的区域（按钮/浮窗）→ 标记正在按，防止被收起
+      if (this.host && this.host.contains(e.target as Node)) {
+        this.isTriggerPressed = true;
+        return;
+      }
+      // 点在外面但正在按按钮 → 也先不收起（等松开再处理）
+      if (this.isTriggerPressed) return;
       this.trigger?.classList.remove('visible');
       this.closeUnpinned();
+    });
+
+    // 松开鼠标 → 清除"正在按"标记
+    document.addEventListener('mouseup', () => {
+      this.isTriggerPressed = false;
     });
 
     // 全屏（放大）时把宿主移进全屏元素，按钮才能显示在视频上层
@@ -442,12 +467,18 @@ class TranslationManager {
   }
 
   private getSelectionInfo() {
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed) return null;
-    const text = sel.toString().trim();
-    if (!text || text.length > 5000) return null;
-    const range = sel.getRangeAt(0);
-    return { text, rect: range.getBoundingClientRect() };
+    try {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) return null;
+      const text = sel.toString().trim();
+      if (!text || text.length > 5000) return null;
+      // 选中状态可能在变化中（如点击按钮清空选中的瞬间），rangeCount 可能是 0
+      if (sel.rangeCount === 0) return null;
+      const range = sel.getRangeAt(0);
+      return { text, rect: range.getBoundingClientRect() };
+    } catch {
+      return null;
+    }
   }
 
   showTrigger() {
@@ -455,8 +486,9 @@ class TranslationManager {
     if (this.triggerCooldown) return;
     const info = this.getSelectionInfo();
     if (!info) return;
-    // 文本没变不再重复亮按钮（拖动/点按钮等操作后文本没变）
-    if (info.text === this.selectedText) return;
+    // 按钮已可见且文本没变 → 跳过（拖动/点按钮后文本没变）
+    // 按钮不可见但文本相同 → 允许重新显示（防止重复选同段文字时按钮不出现）
+    if (this.trigger?.classList.contains('visible') && info.text === this.selectedText) return;
     this.selectedText = info.text;
 
     if (this.trigger) {
@@ -477,7 +509,9 @@ class TranslationManager {
     mouseY?: number;
   }) {
     if (this.triggerCooldown) return;
-    if (!text || text === this.selectedText) return;
+    if (!text) return;
+    // 按钮已可见且文本没变 → 跳过；按钮不可见但文本相同 → 允许重新显示
+    if (this.trigger?.classList.contains('visible') && text === this.selectedText) return;
     this.selectedText = text;
 
     if (this.trigger) {
@@ -526,13 +560,17 @@ class TranslationManager {
     setTimeout(() => { this.triggerCooldown = false; }, 500);
 
     // 计算新浮窗位置（选区附近）
-    const info = this.getSelectionInfo();
     let top = 100, left = 100;
-    if (info) {
-      top = info.rect.bottom + 6;
-      left = info.rect.left;
-      if (left + 380 > window.innerWidth) left = window.innerWidth - 390;
-      if (top + 80 > window.innerHeight) top = info.rect.top - 80;
+    try {
+      const info = this.getSelectionInfo();
+      if (info) {
+        top = info.rect.bottom + 6;
+        left = info.rect.left;
+        if (left + 380 > window.innerWidth) left = window.innerWidth - 390;
+        if (top + 80 > window.innerHeight) top = info.rect.top - 80;
+      }
+    } catch {
+      // 位置计算失败就用默认位置，确保翻译框一定能弹出来
     }
 
     // 偏移一下，避免和已有浮窗完全重叠
@@ -546,6 +584,8 @@ class TranslationManager {
       () => this.onPopupClosed(popup),
     );
     this.instances.push(popup);
+    // 记录创建时间，用于保护期（防止点"翻"时误关）
+    this.lastPopupCreatedAt = Date.now();
 
     // 调用翻译
     try {
@@ -559,7 +599,7 @@ class TranslationManager {
       });
 
       if (response?.success) {
-        popup.showResult(response.data, sourceLang, targetLang);
+        popup.showResult(response.data, sourceLang, targetLang, response.cached === true);
       } else {
         popup.showError(response?.error || '翻译失败');
       }
@@ -579,7 +619,13 @@ class TranslationManager {
 
   // 选中被清空时：收起按钮 + 关闭未置顶浮窗
   hideTriggerAndUnpinned() {
-    this.trigger?.classList.remove('visible');
+    // 正在按住"翻"按钮时，不隐藏按钮（防止点击过程按钮消失）
+    if (!this.isTriggerPressed) {
+      this.trigger?.classList.remove('visible');
+    }
+    // 刚创建浮窗 1 秒内，忽略"选中被清空"信号
+    // （防止点"翻"按钮时页面清空选中，误关刚弹出的翻译框）
+    if (Date.now() - this.lastPopupCreatedAt < 1000) return;
     this.closeUnpinned();
   }
 
@@ -593,7 +639,8 @@ class TranslationManager {
       }
     }
     this.instances = remaining;
-    if (this.instances.length === 0) {
+    // 正在按"翻"按钮时不隐藏按钮（防止点击过程按钮消失）
+    if (this.instances.length === 0 && !this.isTriggerPressed) {
       this.trigger?.classList.remove('visible');
     }
   }
