@@ -6,7 +6,7 @@ export default defineConfig({
   manifest: {
     name: '翻译助手',
     description: '划词翻译工具 - 选中文本即可翻译',
-    version: '1.0.0',
+    version: '1.1.0',
     permissions: ['storage'],
     icons: {
       16: 'icons/16.png',
