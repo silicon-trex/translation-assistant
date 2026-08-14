@@ -42,9 +42,13 @@ const STYLES = `
   border: none;
   padding: 2px 6px;
   font-size: 13px;
+  color: #555;
   cursor: pointer;
   border-radius: 4px;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   transition: background 0.15s;
 }
 
@@ -192,6 +196,20 @@ const STYLES = `
 .trans-trigger:hover { background: #4338ca; }
 `;
 
+// ─── SVG 图标（线条风格，颜色跟随 currentColor）─────────
+const PIN_ICON_SVG = `
+  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <g transform="translate(12 12) rotate(40) scale(0.85) translate(-11.5 -12)">
+      <path d="M16 9V4h1c.55 0 1-.45 1-1V3c0-.55-.45-1-1-1H7c-.55 0-1 .45-1 1v0c0 .55.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"/>
+    </g>
+  </svg>`;
+
+const COPY_ICON_SVG = `
+  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+  </svg>`;
+
 // ─── 单个浮窗实例 ──────────────────────────────
 class PopupInstance {
   readonly el: HTMLDivElement;
@@ -208,6 +226,7 @@ class PopupInstance {
     top: number,
     left: number,
     private onClose?: () => void,
+    private onDragEnd?: () => void,
   ) {
     this.selectedText = text;
 
@@ -227,7 +246,7 @@ class PopupInstance {
 
     const pinBtn = document.createElement('button');
     pinBtn.className = 'pin-btn';
-    pinBtn.textContent = '📌';
+    pinBtn.innerHTML = PIN_ICON_SVG;
     pinBtn.title = '置顶窗口';
     pinBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -259,11 +278,10 @@ class PopupInstance {
     return header;
   }
 
-  // ── 置顶 ──
+  // ── 置顶（图标不变，只改颜色）──
   private togglePin(btn: HTMLButtonElement) {
     this.isPinned = !this.isPinned;
-    btn.className = 'pin-btn' + (this.isPinned ? ' pinned' : '');
-    btn.textContent = this.isPinned ? '📍' : '📌';
+    btn.classList.toggle('pinned', this.isPinned);
     btn.title = this.isPinned ? '取消置顶' : '置顶窗口';
   }
 
@@ -283,6 +301,7 @@ class PopupInstance {
 
     const onUp = () => {
       this.isDragging = false;
+      this.onDragEnd?.();
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
     };
@@ -319,7 +338,7 @@ class PopupInstance {
       <div class="original">${this.escapeHtml(this.selectedText)}</div>
       <div class="result">
         <span class="result-text">${this.escapeHtml(data)}</span>
-        <button class="copy-btn" title="复制翻译结果">📋</button>
+        <button class="copy-btn" title="复制翻译结果">${COPY_ICON_SVG}</button>
       </div>
       <div class="language-hint">${sourceLang} → ${targetLang}${cached ? '  ·  ⚡ 缓存' : ''}</div>
     `;
@@ -333,12 +352,8 @@ class PopupInstance {
       copyBtn.addEventListener('click', async () => {
         try {
           await navigator.clipboard.writeText(data);
-          copyBtn.textContent = '✓';
           copyBtn.classList.add('copied');
-          setTimeout(() => {
-            copyBtn.textContent = '📋';
-            copyBtn.classList.remove('copied');
-          }, 1500);
+          setTimeout(() => copyBtn.classList.remove('copied'), 1500);
         } catch {
           const ta = document.createElement('textarea');
           ta.value = data;
@@ -346,22 +361,17 @@ class PopupInstance {
           ta.select();
           document.execCommand('copy');
           document.body.removeChild(ta);
-          copyBtn.textContent = '✓';
           copyBtn.classList.add('copied');
-          setTimeout(() => {
-            copyBtn.textContent = '📋';
-            copyBtn.classList.remove('copied');
-          }, 1500);
+          setTimeout(() => copyBtn.classList.remove('copied'), 1500);
         }
       });
     }
 
-    // 恢复置顶状态
+    // 恢复置顶状态（图标不变，只加颜色）
     if (this.isPinned) {
       const pinBtn = this.el.querySelector('.pin-btn') as HTMLButtonElement;
       if (pinBtn) {
-        pinBtn.className = 'pin-btn pinned';
-        pinBtn.textContent = '📍';
+        pinBtn.classList.add('pinned');
         pinBtn.title = '取消置顶';
       }
     }
@@ -405,6 +415,8 @@ class TranslationManager {
   private triggerCooldown = false;
   private lastPopupCreatedAt = 0;
   private isTriggerPressed = false;
+  private lastDragEndTime = 0; // 浮窗拖动结束的时间戳（用于抑制误触发的按钮）
+  private lastHostClickAt = 0; // 最近一次点击自己界面（按钮/浮窗）的时间
 
   init() {
     if (this.host) return;
@@ -451,6 +463,7 @@ class TranslationManager {
       // 点在我们的区域（按钮/浮窗）→ 标记正在按，防止被收起
       if (this.host && this.host.contains(e.target as Node)) {
         this.isTriggerPressed = true;
+        this.lastHostClickAt = Date.now();
         return;
       }
       // 点在外面但正在按按钮 → 也先不收起（等松开再处理）
@@ -504,6 +517,8 @@ class TranslationManager {
   showTrigger() {
     // 刚点完"翻"按钮，短暂冷却
     if (this.triggerCooldown) return;
+    // 刚拖完浮窗（300ms 内），忽略这次 mouseup 误触发的显示
+    if (Date.now() - this.lastDragEndTime < 300) return;
     const info = this.getSelectionInfo();
     if (!info) return;
     // 按钮已可见且文本没变 → 跳过（拖动/点按钮后文本没变）
@@ -529,6 +544,8 @@ class TranslationManager {
     mouseY?: number;
   }) {
     if (this.triggerCooldown) return;
+    // 刚拖完浮窗（300ms 内），忽略这次误触发的显示
+    if (Date.now() - this.lastDragEndTime < 300) return;
     if (!text) return;
     // 按钮已可见且文本没变 → 跳过；按钮不可见但文本相同 → 允许重新显示
     if (this.trigger?.classList.contains('visible') && text === this.selectedText) return;
@@ -602,6 +619,7 @@ class TranslationManager {
       this.shadow, this.selectedText,
       Math.max(0, top), Math.max(0, left),
       () => this.onPopupClosed(popup),
+      () => this.onPopupDragEnd(),
     );
     this.instances.push(popup);
     // 记录创建时间，用于保护期（防止点"翻"时误关）
@@ -637,6 +655,12 @@ class TranslationManager {
     }
   }
 
+  // 浮窗拖动结束 → 记录时间，短暂抑制"翻"按钮误显示
+  // （拖动松手会触发 document 的 mouseup，200ms 后误调 showTrigger）
+  private onPopupDragEnd() {
+    this.lastDragEndTime = Date.now();
+  }
+
   // 选中被清空时：收起按钮 + 关闭未置顶浮窗
   hideTriggerAndUnpinned() {
     // 正在按住"翻"按钮时，不隐藏按钮（防止点击过程按钮消失）
@@ -646,6 +670,9 @@ class TranslationManager {
     // 刚创建浮窗 1 秒内，忽略"选中被清空"信号
     // （防止点"翻"按钮时页面清空选中，误关刚弹出的翻译框）
     if (Date.now() - this.lastPopupCreatedAt < 1000) return;
+    // 刚点过自己的界面（按钮/浮窗）1 秒内，忽略"选中被清空"信号
+    // （点弹窗身体/拖标题栏会清空页面选中，约 600ms 后才收到 FYLZ_CLEAR，别误关）
+    if (Date.now() - this.lastHostClickAt < 1000) return;
     this.closeUnpinned();
   }
 
