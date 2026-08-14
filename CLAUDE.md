@@ -36,7 +36,7 @@ Chrome/Edge 划词翻译扩展：选中网页文字 → 出现"翻"按钮 → �
    - `lastHostClickAt`：点自己界面后 1s 内忽略 FYLZ_CLEAR（点弹窗身体会清空页面选中，约 600ms 后才收到 FYLZ_CLEAR）
    - `lastDragEndTime`：拖完浮窗 300ms 内不显示翻按钮（拖拽松手的 mouseup 会误调 showTrigger）
 6. **全屏**（抖音）：监听 `fullscreenchange`，把 host 移进 `document.fullscreenElement`，按钮才能盖在视频上层。
-7. **弹窗**：closed shadow root。支持置顶（图钉图标变靛蓝）、拖拽、复制（成功变绿）、多浮窗（每弹一个向下偏移 20px 防重叠）。
+7. **弹窗**：closed shadow root。支持置顶（图钉图标变靛蓝）、拖拽、复制（成功变绿）、多浮窗（每弹一个向右下各偏移 20px 防重叠）。
 
 ## 版本号
 
