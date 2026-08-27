@@ -521,6 +521,8 @@ class TranslationManager {
     if (this.triggerCooldown) return;
     // 刚拖完浮窗（300ms 内），忽略这次 mouseup 误触发的显示
     if (Date.now() - this.lastDragEndTime < 300) return;
+    // 刚点过自己界面（如置顶/复制/关闭），500ms 内不显示"翻"按钮
+    if (Date.now() - this.lastHostClickAt < 500) return;
     const info = this.getSelectionInfo();
     if (!info) return;
     // 按钮已可见且文本没变 → 跳过（拖动/点按钮后文本没变）
@@ -548,6 +550,8 @@ class TranslationManager {
     if (this.triggerCooldown) return;
     // 刚拖完浮窗（300ms 内），忽略这次误触发的显示
     if (Date.now() - this.lastDragEndTime < 300) return;
+    // 刚点过自己界面（如置顶/复制/关闭），500ms 内不显示"翻"按钮
+    if (Date.now() - this.lastHostClickAt < 500) return;
     if (!text) return;
     // 按钮已可见且文本没变 → 跳过；按钮不可见但文本相同 → 允许重新显示
     if (this.trigger?.classList.contains('visible') && text === this.selectedText) return;
