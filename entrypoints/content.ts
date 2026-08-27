@@ -54,6 +54,8 @@ const STYLES = `
 
 .popup-header .pin-btn:hover { background: #e8e8ee; }
 .popup-header .pin-btn.pinned { color: #4f46e5; }
+.popup-header .pin-btn svg { fill: none; }
+.popup-header .pin-btn.pinned svg { fill: currentColor; }
 
 .popup-header .title {
   flex: 1;
