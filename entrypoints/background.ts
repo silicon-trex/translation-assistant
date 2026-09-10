@@ -84,7 +84,7 @@ async function translateText(text: string, targetLang: string, apiKey: string): 
       'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: 'deepseek-v4-flash',
+      model: 'deepseek-flash',
       messages: [
         {
           role: 'system',

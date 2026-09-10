@@ -61,7 +61,7 @@ async function testTranslation() {
         'Authorization': `Bearer ${key}`,
       },
       body: JSON.stringify({
-        model: 'deepseek-chat',
+        model: 'deepseek-flash',
         messages: [
           { role: 'user', content: '将以下内容翻译成中文：Hello, how are you?' },
         ],

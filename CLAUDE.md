@@ -13,7 +13,7 @@ Chrome/Edge 划词翻译扩展：选中网页文字 → 出现"翻"按钮 → �
   - `npm run dev` —— 开发热更新
   - `npm run build` —— 构建到 `.output/chrome-mv3/`（加载扩展就拖这个文件夹）
   - `npm run zip` —— 打发布用的 zip
-- API：DeepSeek，模型 `deepseek-v4-flash`，非流式（`stream: false`）。模型写死在 `background.ts` 的 `translateText` 里。
+- API：DeepSeek，模型 `deepseek-flash`（即 DeepSeek-V4.1-Flash，2026-09-10 正式上线），非流式（`stream: false`）。模型名**写死**在 `background.ts` 的 `translateText` 里；设置页测试按钮在 `options-script.ts` 里还有一份，**换模型名时两处都要改**。
 
 ## 目录结构
 
@@ -40,7 +40,11 @@ Chrome/Edge 划词翻译扩展：选中网页文字 → 出现"翻"按钮 → �
 
 ## 版本号
 
-当前 **1.1.3**。升级规则：bug 修复升 PATCH（1.1.2 → 1.1.3）。改版时 `package.json` 和 `wxt.config.ts` **两处**都要同步。
+当前 **1.1.4**。升级规则：bug 修复升 PATCH（1.1.3 → 1.1.4）。改版时 `package.json` 和 `wxt.config.ts` **两处**都要同步。
+
+> 开发状态（2026-09-10）：DeepSeek V4.1 Flash 正式上线，模型名统一换成 `deepseek-flash`（旧名 `deepseek-v4-flash` / `deepseek-chat` 官方只承诺"暂时路由"，属于定时炸弹，故提前更换）。本地已提交，**未推送 GitHub**——连同更早两笔未推送的提交（置顶图钉实心填充靛蓝、点击置顶/复制/关闭后「翻」按钮误弹出修复）。待上传时：push → 打 Release。
+>
+> 用户已定的节奏（2026-08-27 起）：**先真实用一段时间，等用出真痛点再改版**，暂缓新功能开发。所以除了修 bug / 兼容性更新，别主动加东西。
 
 ## 已砍掉 / 用户明确不要的功能（别自作主张加回来）
 
@@ -53,6 +57,7 @@ Chrome/Edge 划词翻译扩展：选中网页文字 → 出现"翻"按钮 → �
 - 输入框打字失灵：别在无选中时调 `removeAllRanges()` 清选中（会让输入框丢焦点）。
 - 快速拖动选词偶发按钮不出现：用固定延时发送，**不要**用可重置的防抖。
 - B站评论按钮位置错乱：按钮定位用选区的 `getBoundingClientRect`，坐标失效时兜底用鼠标位置。
+- **GitHub 站内前进/后退后「翻」按钮不弹（未解决）**：只发生在 GitHub 这类慢速 SPA 的站内跳转；GitHub→别的站→GitHub 反而正常。已排除 host 被删、脚本死掉；用 `window.addEventListener('message')` 确认主世界的 `FYLZ_SELECTION` 信号**收得到**，卡在"收到信号 → 按钮没渲染出来"这一段。shadow root 是 closed，控制台查不进去。下次排查首选：在 `content.ts` / `selection-main-world.ts` 加临时 `console.log`。
 - 代码注释、commit message 都用中文。
 
 ## Git / 发布
