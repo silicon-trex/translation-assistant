@@ -75,7 +75,11 @@ Chrome/Edge 划词翻译扩展：选中网页文字 → 出现"翻"按钮 → �
 - 输入框打字失灵：别在无选中时调 `removeAllRanges()` 清选中（会让输入框丢焦点）。
 - 快速拖动选词偶发按钮不出现：用固定延时发送，**不要**用可重置的防抖。
 - B站评论按钮位置错乱：按钮定位用选区的 `getBoundingClientRect`，坐标失效时兜底用鼠标位置。
-- **GitHub 站内前进/后退后「翻」按钮不弹（未解决）**：只发生在 GitHub 这类慢速 SPA 的站内跳转；GitHub→别的站→GitHub 反而正常。已排除 host 被删、脚本死掉；用 `window.addEventListener('message')` 确认主世界的 `FYLZ_SELECTION` 信号**收得到**，卡在"收到信号 → 按钮没渲染出来"这一段。shadow root 是 closed，控制台查不进去。下次排查首选：在 `content.ts` / `selection-main-world.ts` 加临时 `console.log`。
+- **GitHub 站内前进/后退后「翻」按钮不弹 —— 用户 2026-09-10 决定：不修了，别再花时间**
+  - 现象：只在 GitHub 这类慢速 SPA 的**站内跳转**后出现；GitHub→别的站→GitHub 反而正常
+  - 已排除：host 被删、脚本死掉。用 `window.addEventListener('message')` 确认主世界的 `FYLZ_SELECTION` 信号**收得到**，卡在"收到信号 → 按钮没渲染出来"这一段。shadow root 是 closed，控制台查不进去
+  - **不修的理由**：用户说自己用截图翻译代替就行（按钮不弹就直接框选那块字），这个 workaround 对他够用
+  - 诊断记录保留在上面，将来若有人反馈再捡起来；排查首选是在 `content.ts` / `selection-main-world.ts` 加临时 `console.log`
 - **background 的 `onMessage` 必须有兜底分支**：它是 if/else 链，未匹配的 action 如果不回 `sendResponse`，调用方的 `sendMessage` 会**永远 pending**（不是报错，是静默挂起，界面一直转圈）。
 - 截图翻译（`screenshot-overlay.ts`）踩过的坑，改之前必读：
   - **canvas 的 `drawImage` 源矩形越界时不会剪裁，而是把目标矩形整体缩放** → 裁出来又小又错位。源矩形必须自己 clamp 到图片边界内。
