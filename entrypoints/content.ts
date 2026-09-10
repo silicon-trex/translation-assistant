@@ -1,5 +1,6 @@
 import { defineContentScript } from 'wxt/sandbox';
 import { injectScript } from 'wxt/client';
+import { ScreenshotOverlay } from '../screenshot-overlay';
 
 // ─── 样式 ───────────────────────────────────────────
 const STYLES = `
@@ -37,7 +38,8 @@ const STYLES = `
   cursor: grabbing;
 }
 
-.popup-header .pin-btn {
+.popup-header .pin-btn,
+.popup-header .retry-btn {
   background: none;
   border: none;
   padding: 2px 6px;
@@ -52,7 +54,8 @@ const STYLES = `
   transition: background 0.15s;
 }
 
-.popup-header .pin-btn:hover { background: #e8e8ee; }
+.popup-header .pin-btn:hover,
+.popup-header .retry-btn:hover { background: #e8e8ee; }
 .popup-header .pin-btn.pinned { color: #4f46e5; }
 .popup-header .pin-btn svg { fill: none; }
 .popup-header .pin-btn.pinned svg { fill: currentColor; }
@@ -212,6 +215,12 @@ const COPY_ICON_SVG = `
     <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
   </svg>`;
 
+const REFRESH_ICON_SVG = `
+  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
+    <path d="M21 3v6h-6"/>
+  </svg>`;
+
 // ─── 单个浮窗实例 ──────────────────────────────
 class PopupInstance {
   readonly el: HTMLDivElement;
@@ -229,6 +238,7 @@ class PopupInstance {
     left: number,
     private onClose?: () => void,
     private onDragEnd?: () => void,
+    private onRetranslate?: () => void,
   ) {
     this.selectedText = text;
 
@@ -260,6 +270,20 @@ class PopupInstance {
     title.className = 'title';
     title.textContent = '翻译助手';
     header.appendChild(title);
+
+    // 「重新翻译」按钮：跳过缓存重新问模型，翻到满意为止
+    // （只有划词翻译的浮窗传了这个回调；截图翻译不传，就没有这个按钮）
+    if (this.onRetranslate) {
+      const retryBtn = document.createElement('button');
+      retryBtn.className = 'retry-btn';
+      retryBtn.innerHTML = REFRESH_ICON_SVG;
+      retryBtn.title = '重新翻译（不走缓存）';
+      retryBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.onRetranslate?.();
+      });
+      header.appendChild(retryBtn);
+    }
 
     const closeBtn = document.createElement('button');
     closeBtn.className = 'close-btn';
@@ -313,7 +337,10 @@ class PopupInstance {
   }
 
   // ── 加载 ──
-  private showLoading() {
+  showLoading() {
+    // 必须先清空：showResult / showError 都有这一步，showLoading 原本只在构造时调一次
+    // 所以漏了；「重新翻译」会在已有内容的浮窗上再调它，不清空就会追加出第二套头
+    this.el.innerHTML = '';
     const header = this.buildHeader();
     const body = document.createElement('div');
     body.className = 'popup-body';
@@ -393,6 +420,16 @@ class PopupInstance {
     this.el.appendChild(body);
   }
 
+  /** 取当前浮窗的原文（"重新翻译"要用） */
+  getSourceText(): string {
+    return this.selectedText;
+  }
+
+  /** 截图翻译用：识别出原文后回填，让浮窗显示"原文 + 译文"对照 */
+  setOriginal(text: string) {
+    this.selectedText = text;
+  }
+
   // ── 关闭 ──
   hide() {
     this.el.remove();
@@ -419,6 +456,8 @@ class TranslationManager {
   private isTriggerPressed = false;
   private lastDragEndTime = 0; // 浮窗拖动结束的时间戳（用于抑制误触发的按钮）
   private lastHostClickAt = 0; // 最近一次点击自己界面（按钮/浮窗）的时间
+  private isSelecting = false; // 截图翻译进行中（防重复触发）
+  private overlay: ScreenshotOverlay | null = null; // 截图圈选蒙层（懒创建）
 
   init() {
     if (this.host) return;
@@ -517,6 +556,8 @@ class TranslationManager {
   }
 
   showTrigger() {
+    // 截图翻译进行中，页面上的划词 UI 一律让位
+    if (this.isSelecting) return;
     // 刚点完"翻"按钮，短暂冷却
     if (this.triggerCooldown) return;
     // 刚拖完浮窗（300ms 内），忽略这次 mouseup 误触发的显示
@@ -547,6 +588,8 @@ class TranslationManager {
     mouseX?: number;
     mouseY?: number;
   }) {
+    // 截图翻译进行中，页面上的划词 UI 一律让位
+    if (this.isSelecting) return;
     if (this.triggerCooldown) return;
     // 刚拖完浮窗（300ms 内），忽略这次误触发的显示
     if (Date.now() - this.lastDragEndTime < 300) return;
@@ -626,20 +669,27 @@ class TranslationManager {
       Math.max(0, top), Math.max(0, left),
       () => this.onPopupClosed(popup),
       () => this.onPopupDragEnd(),
+      () => this.retranslate(popup),
     );
     this.instances.push(popup);
     // 记录创建时间，用于保护期（防止点"翻"时误关）
     this.lastPopupCreatedAt = Date.now();
 
     // 调用翻译
+    await this.runTranslate(popup, this.selectedText);
+  }
+
+  /** 跑一次翻译并渲染到浮窗；force=true 时跳过缓存（"重新翻译"用） */
+  private async runTranslate(popup: PopupInstance, text: string, force = false) {
     try {
-      const sourceLang = this.detectLanguage(this.selectedText);
+      const sourceLang = this.detectLanguage(text);
       const targetLang = sourceLang === '中文' ? '英文' : '中文';
 
       const response = await chrome.runtime.sendMessage({
         action: 'translate',
-        text: this.selectedText,
+        text,
         targetLang,
+        force,
       });
 
       if (response?.success) {
@@ -650,6 +700,46 @@ class TranslationManager {
     } catch {
       popup.showError('网络错误，请检查网络连接');
     }
+  }
+
+  /** 重新翻译：跳过缓存重新问模型，新结果会覆盖旧缓存 */
+  private async retranslate(popup: PopupInstance) {
+    const text = popup.getSourceText();
+    if (!text) return;
+    popup.showLoading();
+    await this.runTranslate(popup, text, true);
+  }
+
+  /** 把截图发给模型识别 + 翻译，结果渲染到浮窗 */
+  private async runTranslateImage(popup: PopupInstance, imageDataUrl: string) {
+    try {
+      const res = await chrome.runtime.sendMessage({
+        action: 'translate-image',
+        image: imageDataUrl,
+      });
+
+      if (!res?.success) {
+        popup.showError(res?.error || '翻译失败');
+        return;
+      }
+
+      // 截图里是什么语言，调 API 之前根本看不见，没法提前判断翻译方向。
+      // 所以拿【译文】反推：译文一定是纯中文或纯英文，
+      // 比拿可能识别错的原文去猜更稳。
+      const targetLang = this.detectLanguage(res.data);
+      const sourceLang = targetLang === '中文' ? '英文' : '中文';
+
+      popup.setOriginal(res.original || '（未能识别出原文）');
+      popup.showResult(res.data, sourceLang, targetLang);
+    } catch {
+      popup.showError('网络错误，请检查网络连接');
+    }
+  }
+
+  /** 截图翻译的「重新翻译」：拿同一张图重认一遍（截图没有缓存，每次都是新结果） */
+  private async retranslateImage(popup: PopupInstance, imageDataUrl: string) {
+    popup.showLoading();
+    await this.runTranslateImage(popup, imageDataUrl);
   }
 
   // 关闭所有未置顶的浮窗
@@ -669,6 +759,8 @@ class TranslationManager {
 
   // 选中被清空时：收起按钮 + 关闭未置顶浮窗
   hideTriggerAndUnpinned() {
+    // 截图翻译进行中，页面上的划词 UI 一律让位
+    if (this.isSelecting) return;
     // 正在按住"翻"按钮时，不隐藏按钮（防止点击过程按钮消失）
     if (!this.isTriggerPressed) {
       this.trigger?.classList.remove('visible');
@@ -708,6 +800,94 @@ class TranslationManager {
     // 英文占多数或相当 → 英文
     return '英文';
   }
+
+  // ── 截图翻译 ──
+  // 由 background 的快捷键（Ctrl+Shift+X）/ 工具栏图标触发
+  async startScreenshot() {
+    if (this.isSelecting || !this.shadow) return;
+    this.isSelecting = true;
+
+    // 1. 先把自家 UI 藏起来：captureVisibleTab 截的是浏览器【渲染出来的画面】，
+    //    不藏的话「翻」按钮和浮窗会被一起截进图里
+    const restoreUI = this.hideOwnUI();
+
+    try {
+      // 2. 等两帧，确认浏览器真的重绘完了再截
+      await new Promise<void>((r) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => r()));
+      });
+
+      const res = await chrome.runtime.sendMessage({ action: 'capture-screenshot' });
+      if (!res?.success || !res.dataUrl) {
+        this.showScreenshotError(res?.error || '当前页面无法截图');
+        return;
+      }
+
+      // 3. 冻结画面 + 拖框选择
+      if (!this.overlay) {
+        this.overlay = new ScreenshotOverlay(this.shadow);
+      }
+      const crop = await this.overlay.start(res.dataUrl);
+      if (!crop) return; // 用户按 Esc 取消，或拖框过小判定为误触
+
+      // 4. 建浮窗（先显示"翻译中"），位置贴着选框
+      const shadow = this.shadow;
+      if (!shadow) return;
+
+      let top = crop.rect.top + crop.rect.height + 6;
+      let left = crop.rect.left;
+      if (left + 380 > window.innerWidth) left = window.innerWidth - 390;
+      if (top + 80 > window.innerHeight) top = crop.rect.top - 80;
+      // 偏移一下，避免和已有浮窗完全重叠（跟划词翻译一个规矩）
+      const offset = this.instances.length * 20;
+      top += offset;
+      left += offset;
+
+      const imageDataUrl = `data:image/png;base64,${crop.base64}`;
+      const popup = new PopupInstance(
+        shadow, '正在识别图片中的文字…',
+        Math.max(0, top), Math.max(0, left),
+        () => this.onPopupClosed(popup),
+        () => this.onPopupDragEnd(),
+        () => this.retranslateImage(popup, imageDataUrl),
+      );
+      this.instances.push(popup);
+      this.lastPopupCreatedAt = Date.now();
+
+      // 5. 把裁剪结果发给模型
+      await this.runTranslateImage(popup, imageDataUrl);
+    } catch {
+      this.showScreenshotError('截图失败，请重试');
+    } finally {
+      this.isSelecting = false;
+      restoreUI();
+    }
+  }
+
+  /** 截图前把自己的 UI 藏起来，返回恢复函数 */
+  private hideOwnUI(): () => void {
+    this.trigger?.classList.remove('visible');
+    const hidden = this.instances.filter((p) => p.el.style.display !== 'none');
+    for (const p of hidden) p.el.style.display = 'none';
+    return () => {
+      for (const p of hidden) p.el.style.display = '';
+    };
+  }
+
+  /** 用浮窗显示一条错误（截图翻译专用，位置居中偏上） */
+  private showScreenshotError(message: string) {
+    if (!this.shadow) return;
+    const left = Math.max(0, Math.round(window.innerWidth / 2 - 190));
+    const top = Math.max(0, Math.round(window.innerHeight / 3));
+    const popup = new PopupInstance(
+      this.shadow, '',
+      top, left,
+      () => this.onPopupClosed(popup),
+      () => this.onPopupDragEnd(),
+    );
+    this.instances.push(popup);
+    popup.showError(message);
+  }
 }
 
 // ─── 入口 ───────────────────────────────────────────
@@ -725,6 +905,13 @@ export default defineContentScript({
     // 监听鼠标松开，检测是否选中文本（普通页面用）
     document.addEventListener('mouseup', () => {
       setTimeout(() => manager.showTrigger(), 200);
+    });
+
+    // 接收 background 的截图翻译指令（快捷键 Ctrl+Shift+X / 点工具栏图标）
+    chrome.runtime.onMessage.addListener((request) => {
+      if (request?.action === 'start-screenshot') {
+        manager.startScreenshot();
+      }
     });
 
     // 接收主世界检测脚本发来的选中信息（Shadow DOM 页面用）

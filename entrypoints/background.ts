@@ -113,22 +113,27 @@ async function translateText(text: string, targetLang: string, apiKey: string): 
 }
 
 // ─── 翻译请求处理（缓存优先） ─────────────────────
-async function handleTranslate(text: string, targetLang: string, apiKey: string): Promise<{ success: boolean; data?: string; cached?: boolean; error?: string }> {
+async function handleTranslate(text: string, targetLang: string, apiKey: string, force = false): Promise<{ success: boolean; data?: string; cached?: boolean; error?: string }> {
   const key = makeKey(text, targetLang);
 
-  // 1. 查缓存
-  const cached = cacheGet(key);
-  if (cached) {
-    return { success: true, data: cached, cached: true };
-  }
+  // force = 用户点了「重新翻译」：跳过缓存直接重问，
+  // 否则会被第一次那个"不合格"的缓存永远锁死
+  if (!force) {
+    // 1. 查缓存
+    const cached = cacheGet(key);
+    if (cached) {
+      return { success: true, data: cached, cached: true };
+    }
 
-  // 2. 在途去重：同一段文字正在翻译中 → 共享结果（不重复调 API）
-  if (inflight.has(key)) {
-    const result = await inflight.get(key);
-    return { success: true, data: result };
+    // 2. 在途去重：同一段文字正在翻译中 → 共享结果（不重复调 API）
+    if (inflight.has(key)) {
+      const result = await inflight.get(key);
+      return { success: true, data: result };
+    }
   }
 
   // 3. 调 API（成功才缓存）
+  //    重翻的新结果会【覆盖】旧缓存 —— 用户"翻到满意为止"，以最后一次为准
   const promise = translateText(text, targetLang, apiKey)
     .then((result) => {
       // 只缓存较短的文本，且成功结果才缓存
@@ -146,9 +151,91 @@ async function handleTranslate(text: string, targetLang: string, apiKey: string)
   return { success: true, data: result };
 }
 
+// ─── 图片翻译（截图翻译用）─────────────────────────
+async function translateImage(
+  dataUrl: string,
+  apiKey: string,
+): Promise<{ original: string; translation: string }> {
+  const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: 'deepseek-flash',
+      messages: [
+        {
+          role: 'system',
+          content:
+            '你是专业的 OCR + 翻译助手。\n' +
+            '1. 先识别图片中的文字，原样保留，不要翻译、不要改写、不要补充。\n' +
+            '2. 再把识别出的文字翻译一次：若图中文字主要是中文，翻译成英文；否则翻译成中文。\n' +
+            '严格按下面的格式输出，不要输出任何其他内容：\n' +
+            '<原文>\n识别出的文字\n</原文>\n' +
+            '<译文>\n翻译结果\n</译文>\n' +
+            '若图中没有可识别的文字，输出 <原文></原文><译文>未识别到文字</译文>',
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: '请识别并翻译这张图片。' },
+            // detail: 'high' —— 截图里全是小字，别用 low（会缩到 512×512 把字糊掉）
+            { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
+          ],
+        },
+      ],
+      stream: false,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`翻译服务异常 (${response.status}): ${errorText}`);
+  }
+
+  const data = await response.json();
+  const raw = (data.choices?.[0]?.message?.content ?? '').trim();
+  return parseOcrResult(raw);
+}
+
+/** 解析模型返回的 <原文>/<译文> 标签；标签缺失时降级成"整段当译文"，保证结果不丢 */
+function parseOcrResult(raw: string): { original: string; translation: string } {
+  // 模型有时会自作主张套个 markdown 代码块，先剥掉
+  const s = raw.replace(/```[a-z]*/gi, '').trim();
+  const o = s.match(/<原文>([\s\S]*?)<\/原文>/);
+  const t = s.match(/<译文>([\s\S]*?)<\/译文>/);
+  if (t) {
+    return { original: (o?.[1] ?? '').trim(), translation: t[1].trim() };
+  }
+  return { original: '', translation: s };
+}
+
+// ─── 截图翻译：触发入口 ─────────────────────────────
+// 快捷键或点工具栏图标 → 通知当前标签页的内容脚本进入截图模式
+async function startScreenshotOnActiveTab() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) return;
+    await chrome.tabs.sendMessage(tab.id, { action: 'start-screenshot' });
+  } catch {
+    // 当前页面不支持截图（chrome:// 页、扩展商店等），或内容脚本没注入 → 静默忽略
+  }
+}
+
 export default defineBackground(() => {
   // 启动时加载缓存
   loadCache();
+
+  // 快捷键触发（Ctrl+Shift+X）
+  chrome.commands.onCommand.addListener((command) => {
+    if (command === 'screenshot-translate') startScreenshotOnActiveTab();
+  });
+
+  // 点工具栏图标触发（快捷键的备用入口）
+  chrome.action.onClicked.addListener(() => {
+    startScreenshotOnActiveTab();
+  });
 
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'translate') {
@@ -167,6 +254,7 @@ export default defineBackground(() => {
             request.text,
             request.targetLang || '中文',
             apiKey,
+            request.force === true,
           );
           sendResponse(result);
         } catch (error) {
@@ -178,5 +266,52 @@ export default defineBackground(() => {
       })();
       return true; // 保持消息通道打开，等待异步响应
     }
+
+    if (request.action === 'translate-image') {
+      (async () => {
+        try {
+          const apiKey = await getApiKey();
+          if (!apiKey) {
+            sendResponse({
+              success: false,
+              error: '请先在扩展设置中配置 DeepSeek API 密钥',
+            });
+            return;
+          }
+          const result = await translateImage(request.image, apiKey);
+          sendResponse({
+            success: true,
+            original: result.original,
+            data: result.translation,
+          });
+        } catch (error) {
+          sendResponse({
+            success: false,
+            error: error instanceof Error ? error.message : '翻译失败，请重试',
+          });
+        }
+      })();
+      return true;
+    }
+
+    if (request.action === 'capture-screenshot') {
+      (async () => {
+        try {
+          // 截当前可视区域：PNG 无损，文字边缘不会被压缩糊掉
+          const dataUrl = await chrome.tabs.captureVisibleTab({ format: 'png' });
+          sendResponse({ success: true, dataUrl });
+        } catch (error) {
+          sendResponse({
+            success: false,
+            error: error instanceof Error ? error.message : '当前页面无法截图',
+          });
+        }
+      })();
+      return true;
+    }
+
+    // 兜底：未知请求也必须回一个响应，否则调用方的 sendMessage 会永远 pending
+    sendResponse({ success: false, error: '未知请求' });
+    return false;
   });
 });
